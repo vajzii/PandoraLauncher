@@ -107,7 +107,16 @@ impl BackendState {
                 let selected_account = self.account_info.read().selected_account;
 
                 let mut credentials = if let Some(selected_account) = selected_account {
-                    secret_storage.read_credentials(selected_account).await.ok().flatten().unwrap_or_default()
+                    match secret_storage.read_credentials(selected_account).await {
+                        Ok(credentials) => credentials.unwrap_or_default(),
+                        Err(error) => {
+                            eprintln!("Unable to read credentials from keychain: {error}");
+                            self.send.send_warning(
+                                "Unable to read credentials from keychain. You will need to log in again",
+                            );
+                            AccountCredentials::default()
+                        },
+                    }
                 } else {
                     AccountCredentials::default()
                 };

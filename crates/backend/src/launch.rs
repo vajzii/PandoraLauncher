@@ -152,8 +152,7 @@ impl Launcher {
         launch_tracker.add_count(1);
         launch_tracker.notify();
 
-        let mut classpath = OsString::new();
-        let mut first = true;
+        let mut classpath = Vec::new();
         for (raw_path, library_path) in library_paths {
             if let Some(extract_options) = natives_to_extract.get(&raw_path) {
                 let Ok(file) = std::fs::File::open(library_path) else {
@@ -191,12 +190,7 @@ impl Launcher {
                     }
                 }
             } else {
-                if first {
-                    first = false;
-                } else {
-                    classpath.push(":");
-                }
-                classpath.push(library_path.as_os_str());
+                classpath.push(library_path.into_os_string());
             }
         }
 
@@ -1036,8 +1030,6 @@ pub enum LoadLibrariesError {
     WrongResponseSize,
     #[error("Downloaded file had the wrong hash")]
     WrongHash,
-    #[error("Error accessing libraries directory")]
-    CannotCanonicalizeLibrariesDir,
     #[error("Illegal library path {0}, directory traversal?")]
     IllegalLibraryPath(Ustr),
 }
@@ -1058,9 +1050,6 @@ async fn do_libraries_load(
     let mut tasks = Vec::new();
 
     let _ = std::fs::create_dir_all(&libraries_dir);
-    let Ok(libraries_dir) = std::fs::canonicalize(libraries_dir) else {
-        return Err(LoadLibrariesError::CannotCanonicalizeLibrariesDir);
-    };
 
     for artifact in artifacts {
         let expected_hash = if let Some(sha1) = &artifact.sha1 {
@@ -1376,7 +1365,7 @@ pub struct LaunchContext {
     pub assets_root: Arc<Path>,
     pub temp_dir: Arc<Path>,
     pub assets_index_name: String,
-    pub classpath: OsString,
+    pub classpath: Vec<OsString>,
     pub log_configuration: Option<OsString>,
     pub rule_context: LaunchRuleContext,
     pub login_info: MinecraftLoginInfo,
@@ -1392,13 +1381,12 @@ impl LaunchContext {
         command.stdout(Stdio::piped());
         command.stderr(Stdio::piped());
 
-        self.classpath.push(":");
-        self.classpath.push(launch_wrapper::create_wrapper(&self.temp_dir));
+        self.classpath.push(launch_wrapper::create_wrapper(&self.temp_dir).into_os_string());
 
         if !self.add_mods.is_empty() {
             // todo: forge?
 
-            let joined = std::env::join_paths(self.add_mods.iter()).unwrap();
+            let joined = std::env::join_paths(&self.add_mods).unwrap();
 
             let mut add_mods_argument = OsString::new();
             add_mods_argument.push("-Dfabric.addMods=");
@@ -1417,7 +1405,7 @@ impl LaunchContext {
 
             command.arg(java_library_path);
             command.arg("-cp");
-            command.arg(&self.classpath);
+            command.arg(std::env::join_paths(&self.classpath).unwrap());
         }
 
         if let Some(log_configuration) = &self.log_configuration {
@@ -1521,7 +1509,7 @@ impl LaunchContext {
             ArgumentExpansionKey::NativesDirectory => self.natives_dir.as_os_str().into(),
             ArgumentExpansionKey::LauncherName => OsStr::new("PandoraLauncher").into(),
             ArgumentExpansionKey::LauncherVersion => OsStr::new("1.0.0").into(),
-            ArgumentExpansionKey::Classpath => self.classpath.as_os_str().into(),
+            ArgumentExpansionKey::Classpath => std::env::join_paths(&self.classpath).unwrap().into(),
             ArgumentExpansionKey::AuthPlayerName => OsStr::new(&*self.login_info.username).into(),
             ArgumentExpansionKey::VersionName => OsStr::new("1.21.10").into(),
             ArgumentExpansionKey::GameDirectory => self.game_dir.as_os_str().into(),

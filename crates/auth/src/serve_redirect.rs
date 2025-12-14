@@ -1,6 +1,6 @@
 use std::{error::Error, io::Cursor, time::Duration};
 
-use tiny_http::{Response, Server};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -11,12 +11,14 @@ use crate::{
 
 #[derive(thiserror::Error, Debug)]
 pub enum ProcessAuthorizationError {
-    #[error("Unable to start http server")]
+    #[error("Unable to start http server: {0}")]
     StartServer(Box<dyn Error + Send + Sync + 'static>),
-    #[error("An I/O error occurred")]
+    #[error("An I/O error occurred: {0}")]
     IoError(#[from] std::io::Error),
-    #[error("Server-side error")]
+    #[error("Server-side error: {0}")]
     ServersideError(String),
+    #[error("Unable to parse HTTP request: {0}")]
+    HttpParseError(#[from] httparse::Error),
     #[error("The csrf token in the request didn't match the response")]
     CsrfMismatch,
     #[error("The response didn't include the code")]
@@ -25,111 +27,138 @@ pub enum ProcessAuthorizationError {
     CancelledByUser,
 }
 
-pub fn start_server(
+pub async fn start_server(
     pending_authroization: PendingAuthorization,
-    cancel: CancellationToken,
 ) -> Result<FinishedAuthorization, ProcessAuthorizationError> {
-    let server = Server::http(constants::SERVER_ADDRESS).map_err(ProcessAuthorizationError::StartServer)?;
+    let listener = tokio::net::TcpListener::bind(constants::SERVER_ADDRESS).await?;
+
+    let mut buf = [0_u8; 1024];
+    let mut read = 0;
 
     loop {
-        let request = server.recv_timeout(Duration::from_millis(50))?;
-        if cancel.is_cancelled() {
-            break Err(ProcessAuthorizationError::CancelledByUser);
-        }
-        let Some(request) = request else {
-            continue;
-        };
+        let (mut stream, addr) = listener.accept().await?;
 
-        let url = Url::parse(&format!("{}{}", constants::REDIRECT_URL_BASE, request.url())).unwrap();
-        let mut error = None;
-        let mut error_description = None;
-        let mut code = None;
-        let mut state = None;
+        read = 0;
+        loop {
+            let n = stream.read(&mut buf[read..]).await?;
+            read += n;
 
-        for (key, value) in url.query_pairs() {
-            match &*key {
-                "error" => error = Some(value),
-                "error_description" => error_description = Some(value),
-                "code" => code = Some(value),
-                "state" => state = Some(value),
-                _ => {
-                    eprintln!("Unknown parameter: {:?} => {:?}", key, value);
-                },
+            if read == 0 {
+                break; // Accept a new connection
             }
-        }
 
-        let request = if let Some(ref code) = code {
-            let url = url.to_string().replace(&**code, "hidden");
+            let mut headers = [httparse::EMPTY_HEADER; 32];
+            let mut req = httparse::Request::new(&mut headers);
+            let parsed = req.parse(&buf[..read])?;
 
-            // Redirect user immediately with a 302 to prevent code from being shown/saved in browser history
-            // This definitely isn't necessary, but hey--I'm paranoid
-            let _ = request.respond(Response::new(
-                tiny_http::StatusCode(302),
-                vec![tiny_http::Header::from_bytes(&b"Location"[..], url).unwrap()],
-                std::io::empty(),
-                Some(0),
-                None,
-            ));
-            server.recv_timeout(Duration::from_millis(250)).ok().flatten()
-        } else {
-            Some(request)
-        };
+            if parsed.is_partial() {
+                if n == 0 {
+                    break; // Accept a new connection
+                } else {
+                    continue;
+                }
+            }
 
-        if let Some(error) = error {
-            let full_error = if let Some(error_description) = error_description {
-                respond(request, &format!("An error occurred: {}", &*error), &error_description, true);
-                format!("An error occurred: {}\n{}", error, error_description)
-            } else {
-                respond(request, &format!("An error occurred: {}", &*error), "", true);
-                format!("An error occurred: {}", error)
+            const BAD_REQUEST_RESPONSE: &[u8] = b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n";
+            const NOT_FOUND_RESPONSE: &[u8] = b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+
+            if req.method != Some("GET") || req.path.is_none() {
+                stream.write_all(NOT_FOUND_RESPONSE).await?;
+                break;
+            }
+            let path = req.path.unwrap();
+
+            let Ok(url) = Url::parse(&format!("{}{}", constants::REDIRECT_URL_BASE, path)) else {
+                stream.write_all(BAD_REQUEST_RESPONSE).await?;
+                break;
             };
-            return Err(ProcessAuthorizationError::ServersideError(full_error));
+
+            if url.path() != "/auth" {
+                stream.write_all(NOT_FOUND_RESPONSE).await?;
+                break;
+            }
+
+            let mut error = None;
+            let mut error_description = None;
+            let mut code = None;
+            let mut state = None;
+
+            for (key, value) in url.query_pairs() {
+                match &*key {
+                    "error" => error = Some(value),
+                    "error_description" => error_description = Some(value),
+                    "code" => code = Some(value),
+                    "state" => state = Some(value),
+                    _ => {
+                        eprintln!("Unknown parameter: {:?} => {:?}", key, value);
+                    },
+                }
+            }
+
+            if let Some(error) = error {
+                let full_error = if let Some(error_description) = error_description {
+                    let response = create_response(&format!("An error occurred: {}", &*error), &error_description, true);
+                    stream.write_all(response.as_bytes()).await?;
+                    format!("An error occurred: {}\n{}", error, error_description)
+                } else {
+                    let response = create_response(&format!("An error occurred: {}", &*error), "", true);
+                    stream.write_all(response.as_bytes()).await?;
+                    format!("An error occurred: {}", error)
+                };
+                return Err(ProcessAuthorizationError::ServersideError(full_error));
+            }
+
+            if let Some(state) = state
+                && &*state != pending_authroization.csrf_token.secret()
+            {
+                let response = create_response(
+                    "Error: CSRF Mismatch!",
+                    "Did you reload the tab instead of going through the proper authorization flow?",
+                    true,
+                );
+                stream.write_all(response.as_bytes()).await?;
+                return Err(ProcessAuthorizationError::CsrfMismatch);
+            }
+
+            let Some(code) = code else {
+                let response = create_response("Error", "Missing required 'code' parameter", true);
+                stream.write_all(response.as_bytes()).await?;
+                return Err(ProcessAuthorizationError::MissingCode);
+            };
+
+            let response = create_response("Authorization complete", "You may now close this window", false);
+            stream.write_all(response.as_bytes()).await?;
+
+            return Ok(FinishedAuthorization {
+                pending: pending_authroization,
+                code: code.to_string(),
+            });
         }
-
-        if let Some(state) = state
-            && &*state != pending_authroization.csrf_token.secret()
-        {
-            respond(
-                request,
-                "Error: CSRF Mismatch!",
-                "Did you reload the tab instead of going through the proper authorization flow?",
-                true,
-            );
-            return Err(ProcessAuthorizationError::CsrfMismatch);
-        }
-
-        let Some(code) = code else {
-            respond(request, "Error", "Missing required 'code' parameter", true);
-            return Err(ProcessAuthorizationError::MissingCode);
-        };
-
-        respond(request, "Authorization complete", "You may now close this window", false);
-
-        return Ok(FinishedAuthorization {
-            pending: pending_authroization,
-            code: code.to_string(),
-        });
     }
+
+    // let server = Server::http(constants::SERVER_ADDRESS).map_err(ProcessAuthorizationError::StartServer)?;
+
+    // loop {
+    //     let request = server.recv_timeout(Duration::from_millis(50))?;
+    //     if cancel.is_cancelled() {
+    //         break Err(ProcessAuthorizationError::CancelledByUser);
+    //     }
+    //     let Some(request) = request else {
+    //         continue;
+    //     };
+
+    // }
 }
 
-fn respond(request: Option<tiny_http::Request>, main: &str, secondary: &str, error: bool) {
-    let Some(request) = request else {
-        return;
+fn create_response(main: &str, secondary: &str, error: bool) -> String {
+    let status = if error {
+        "200 OK"
+    } else {
+        "400 Bad Request"
     };
 
-    let status_code = if error {
-        tiny_http::StatusCode(200)
-    } else {
-        tiny_http::StatusCode(400)
-    };
-    let string = format!(include_str!("auth_page.html"), main, secondary);
-    let string_length = string.len();
-    let response = Response::new(
-        status_code,
-        vec![tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=UTF-8"[..]).unwrap()],
-        Cursor::new(string.into_bytes()),
-        Some(string_length),
-        None,
-    );
-    let _ = request.respond(response);
+    let body = format!(include_str!("auth_page.html"), main, secondary);
+    let body_length = body.len();
+
+    format!("HTTP/1.1 {status}\r\nContent-Type: text/html; charset=UTF-8\r\nContent-Length: {}\r\n\r\n{}", body_length, body)
 }

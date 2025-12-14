@@ -66,6 +66,11 @@ impl AssetSource for Assets {
     }
 }
 
+#[cfg(windows)]
+pub const MAIN_FONT: &'static str = "Inter 24pt 24pt";
+#[cfg(not(windows))]
+pub const MAIN_FONT: &'static str = "Inter 24pt";
+
 pub fn start(
     panic_message: Arc<RwLock<Option<String>>>,
     deadlock_message: Arc<RwLock<Option<String>>>,
@@ -89,10 +94,8 @@ pub fn start(
         gpui_component::Theme::change(ThemeMode::Dark, None, cx);
 
         let theme = gpui_component::Theme::global_mut(cx);
-        theme.font_family = SharedString::new_static("Inter 24pt");
+        theme.font_family = SharedString::new_static(MAIN_FONT);
         theme.scrollbar_show = gpui_component::scroll::ScrollbarShow::Always;
-
-        let bounds = Bounds::centered(None, size(px(500.), px(500.0)), cx);
 
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
@@ -102,8 +105,8 @@ pub fn start(
 
         cx.open_window(
             WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(300.0), px(200.0))),
+                app_id: Some("PandoraLauncher".into()),
+                window_min_size: Some(size(px(360.0), px(240.0))),
                 titlebar: Some(TitlebarOptions {
                     title: Some(SharedString::new_static("Pandora")),
                     ..Default::default()
@@ -214,7 +217,16 @@ pub fn start(
                                     });
                                 },
                                 MessageToFrontend::CreateGameOutputWindow { id, keep_alive } => {
-                                    _ = cx.open_window(WindowOptions::default(), |window, cx| {
+                                    let options = WindowOptions {
+                                        app_id: Some("PandoraLauncher".into()),
+                                        window_min_size: Some(size(px(360.0), px(240.0))),
+                                        titlebar: Some(TitlebarOptions {
+                                            title: Some(SharedString::new_static("Minecraft Game Output")),
+                                            ..Default::default()
+                                        }),
+                                        ..Default::default()
+                                    };
+                                    _ = cx.open_window(options, |window, cx| {
                                         let game_output = cx.new(|_| GameOutput::default());
                                         let game_output_root = cx
                                             .new(|cx| GameOutputRoot::new(keep_alive, game_output.clone(), window, cx));

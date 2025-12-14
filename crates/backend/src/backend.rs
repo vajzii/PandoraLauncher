@@ -367,10 +367,12 @@ impl BackendState {
                     });
                     self.send.send(MessageToFrontend::Refresh);
 
-                    let cancel = modal_action.request_cancel.clone();
-                    let finished = tokio::task::spawn_blocking(move || {
-                        serve_redirect::start_server(pending, cancel)
-                    }).await.unwrap()?;
+                    let finished = tokio::select! {
+                        finished = serve_redirect::start_server(pending) => finished?,
+                        _ = modal_action.request_cancel.cancelled() => {
+                            return Err(LoginError::CancelledByUser);
+                        }
+                    };
 
                     modal_action.unset_visit_url();
                     self.send.send(MessageToFrontend::Refresh);

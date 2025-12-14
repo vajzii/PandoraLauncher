@@ -10,7 +10,7 @@ use bridge::{
 use gpui::{prelude::*, *};
 use gpui_component::{breadcrumb::Breadcrumb, scroll::ScrollbarAxis, v_flex, StyledExt};
 
-use crate::{entity::DataEntities, modals, ui::{LauncherUI, PageType}};
+use crate::{MAIN_FONT, entity::DataEntities, modals, ui::{LauncherUI, PageType}};
 
 pub struct LauncherRootGlobal {
     pub root: Entity<LauncherRoot>,
@@ -64,7 +64,7 @@ impl Render for LauncherRoot {
 
         div()
             .size_full()
-            .font_family("Inter 24pt")
+            .font_family(MAIN_FONT)
             .child(self.ui.clone())
             .into_any_element()
     }

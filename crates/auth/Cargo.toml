@@ -21,8 +21,9 @@ anyhow.workspace = true
 uuid.workspace = true
 keyring.workspace = true
 obfstr.workspace = true
-tiny_http.workspace = true
+tokio.workspace = true
 tokio-util.workspace = true
+httparse.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 oo7 = { version = "0.5.0", default-features = false, features = ["native_crypto", "async-std"] }
