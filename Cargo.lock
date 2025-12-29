@@ -481,6 +481,8 @@ dependencies = [
  "p256",
  "rand 0.8.5",
  "reqwest",
+ "security-framework 3.5.1",
+ "security-framework-sys",
  "serde",
  "serde_json",
  "sha2",

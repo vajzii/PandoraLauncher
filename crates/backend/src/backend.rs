@@ -4,9 +4,9 @@ use std::{
 
 use auth::{
     authenticator::{Authenticator, MsaAuthorizationError, XboxAuthenticateError},
-    credentials::{AUTH_STAGE_COUNT, AccountCredentials},
+    credentials::{AccountCredentials, AUTH_STAGE_COUNT},
     models::{MinecraftAccessToken, MinecraftProfileResponse, SkinState},
-    secret::PlatformSecretStorage,
+    secret::{PlatformSecretStorage, SecretStorageError},
     serve_redirect::{self, ProcessAuthorizationError},
 };
 use bridge::{
@@ -148,7 +148,7 @@ pub struct BackendState {
     pub mod_metadata_manager: Arc<ModMetadataManager>,
     pub account_info: Arc<RwLock<BackendAccountInfo>>,
     pub config: Arc<RwLock<BackendConfig>>,
-    pub secret_storage: Arc<OnceCell<PlatformSecretStorage>>,
+    pub secret_storage: Arc<OnceCell<Result<PlatformSecretStorage, SecretStorageError>>>,
 }
 
 impl BackendState {

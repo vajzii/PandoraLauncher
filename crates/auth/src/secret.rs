@@ -15,6 +15,9 @@ pub enum SecretStorageError {
     #[cfg(target_os = "windows")]
     #[error("Windows error: {0}")]
     WindowsError(#[from] windows::core::Error),
+    #[cfg(target_os = "macos")]
+    #[error("Security.Framework error: {0}")]
+    SecurityFrameworkError(#[from] security_framework::base::Error),
 }
 
 #[cfg(target_os = "linux")]
@@ -54,10 +57,10 @@ mod inner {
     }
 
     impl PlatformSecretStorage {
-        pub async fn new() -> Self {
-            Self {
+        pub async fn new() -> Result<Self, SecretStorageError> {
+            Ok(Self {
                 keyring: oo7::Keyring::new().await,
-            }
+            })
         }
 
         pub async fn read_credentials(&self, uuid: Uuid) -> Result<Option<AccountCredentials>, SecretStorageError> {
@@ -120,8 +123,8 @@ mod inner {
     pub struct PlatformSecretStorage;
 
     impl PlatformSecretStorage {
-        pub async fn new() -> Self {
-            Self
+        pub async fn new() -> Result<Self, SecretStorageError> {
+            Ok(Self)
         }
 
         pub async fn read_credentials(&self, uuid: Uuid) -> Result<Option<AccountCredentials>, SecretStorageError> {
@@ -236,6 +239,70 @@ mod inner {
                 delete(format!("PandoraLauncher_AccessToken_{}", uuid)),
             ].into_iter().collect::<Result<(), _>>()?;
 
+            Ok(())
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod inner {
+    use security_framework::os::macos::keychain::{SecKeychain, SecPreferencesDomain};
+    use uuid::Uuid;
+
+    use crate::{credentials::AccountCredentials, secret::SecretStorageError};
+
+    pub struct PlatformSecretStorage {
+        keychain: SecKeychain,
+    }
+
+    impl PlatformSecretStorage {
+        pub async fn new() -> Result<Self, SecretStorageError> {
+            Ok(Self {
+                keychain: SecKeychain::default_for_domain(SecPreferencesDomain::User)?
+            })
+        }
+
+        pub async fn read_credentials(&self, uuid: Uuid) -> Result<Option<AccountCredentials>, SecretStorageError> {
+            let uuid_str = uuid.as_hyphenated().to_string();
+            let data = match self.keychain.find_generic_password("com.moulberry.pandoralauncher", uuid_str.as_str()) {
+                Ok((data, _)) => data,
+                Err(error) if error.code() == security_framework_sys::base::errSecItemNotFound => {
+                    return Ok(None);
+                },
+                Err(error) => {
+                    return Err(error.into());
+                }
+            };
+            let data = data.as_ref();
+            Ok(Some(serde_json::from_slice(&data).map_err(|_| SecretStorageError::SerializationError)?))
+        }
+
+        pub async fn write_credentials(
+            &self,
+            uuid: Uuid,
+            credentials: &AccountCredentials,
+        ) -> Result<(), SecretStorageError> {
+            let uuid_str = uuid.as_hyphenated().to_string();
+            let bytes = serde_json::to_vec(credentials).map_err(|_| SecretStorageError::SerializationError)?;
+
+            self.keychain.set_generic_password("com.moulberry.pandoralauncher", uuid_str.as_str(), &bytes)?;
+            Ok(())
+        }
+
+        pub async fn delete_credentials(&self, uuid: Uuid) -> Result<(), SecretStorageError> {
+            let uuid_str = uuid.as_hyphenated().to_string();
+
+            let item = match self.keychain.find_generic_password("com.moulberry.pandoralauncher", uuid_str.as_str()) {
+                Ok((_, item)) => item,
+                Err(error) if error.code() == security_framework_sys::base::errSecItemNotFound => {
+                    return Ok(());
+                },
+                Err(error) => {
+                    return Err(error.into());
+                }
+            };
+
+            item.delete();
             Ok(())
         }
     }

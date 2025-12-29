@@ -129,7 +129,14 @@ impl BackendState {
                 quick_play,
                 modal_action,
             } => {
-                let secret_storage = self.secret_storage.get_or_init(PlatformSecretStorage::new).await;
+                let secret_storage = match self.secret_storage.get_or_init(PlatformSecretStorage::new).await {
+                    Ok(secret_storage) => secret_storage,
+                    Err(error) => {
+                        modal_action.set_error_message(format!("Error initializing secret storage: {error}").into());
+                        modal_action.set_finished();
+                        return;
+                    }
+                };
 
                 let selected_account = self.account_info.read().selected_account;
 
@@ -158,7 +165,14 @@ impl BackendState {
                     return;
                 }
 
-                let secret_storage = self.secret_storage.get_or_init(PlatformSecretStorage::new).await;
+                let secret_storage = match self.secret_storage.get_or_init(PlatformSecretStorage::new).await {
+                    Ok(secret_storage) => secret_storage,
+                    Err(error) => {
+                        modal_action.set_error_message(format!("Error initializing secret storage: {error}").into());
+                        modal_action.set_finished();
+                        return;
+                    }
+                };
 
                 let (profile, access_token) = match login_result {
                     Ok(login_result) => {
