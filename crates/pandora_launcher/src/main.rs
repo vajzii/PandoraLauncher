@@ -48,6 +48,12 @@ fn main() {
         }
     });
 
-    backend::start(frontend_handle, backend_handle.clone(), backend_recv);
-    frontend::start(panic_message, deadlock_message, backend_handle, frontend_recv);
+    let base_dirs = directories::BaseDirs::new().unwrap();
+    let data_dir = base_dirs.data_dir();
+    let launcher_dir = data_dir.join("PandoraLauncher");
+
+    _ = std::env::set_current_dir(&launcher_dir);
+
+    backend::start(launcher_dir.clone(), frontend_handle, backend_handle.clone(), backend_recv);
+    frontend::start(launcher_dir.clone(), panic_message, deadlock_message, backend_handle, frontend_recv);
 }

@@ -1,3 +1,5 @@
+use std::{path::Path, sync::Arc};
+
 use bridge::handle::BackendHandle;
 use gpui::Entity;
 
@@ -15,4 +17,5 @@ pub struct DataEntities {
     pub metadata: Entity<FrontendMetadata>,
     pub accounts: Entity<AccountEntries>,
     pub backend_handle: BackendHandle,
+    pub theme_folder: Arc<Path>,
 }

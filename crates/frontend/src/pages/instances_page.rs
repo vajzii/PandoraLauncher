@@ -307,11 +307,6 @@ impl InstancesPage {
                 _ => unreachable!(),
             };
 
-            #[inline]
-            fn labelled(label: &'static str, element: impl IntoElement) -> Div {
-                v_flex().gap_1().child(div().text_sm().font_medium().child(label)).child(element)
-            }
-
             let version_dropdown;
             let show_snapshots_button;
             let loader_button_group;
@@ -380,12 +375,12 @@ impl InstancesPage {
 
             let content = v_flex()
                 .gap_3()
-                .child(labelled(
+                .child(crate::labelled(
                     "Name",
                     Input::new(&name_input_state).when(name_is_invalid, |this| this.border_color(cx.theme().danger)),
                 ))
-                .child(labelled("Version", v_flex().gap_2().child(version_dropdown).child(show_snapshots_button)))
-                .child(labelled("Modloader", loader_button_group));
+                .child(crate::labelled("Version", v_flex().gap_2().child(version_dropdown).child(show_snapshots_button)))
+                .child(crate::labelled("Modloader", loader_button_group));
 
             let text_input_state = name_input_state.clone();
             let backend_handle = backend_handle.clone();

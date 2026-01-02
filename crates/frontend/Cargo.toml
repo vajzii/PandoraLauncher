@@ -30,5 +30,8 @@ reqwest_client.workspace = true
 uuid.workspace = true
 enumset.workspace = true
 hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rand.workspace = true
 
 rust-i18n = "3.1.5"

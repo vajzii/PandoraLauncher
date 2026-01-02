@@ -9,9 +9,7 @@ use gpui_component::{
 use crate::{
     entity::{
         instance::{InstanceAddedEvent, InstanceModifiedEvent, InstanceMovedToTopEvent, InstanceRemovedEvent}, DataEntities
-    },
-    pages::{instance::instance_page::{InstancePage, InstanceSubpageType}, instances_page::InstancesPage, modrinth_page::ModrinthSearchPage, syncing_page::SyncingPage},
-    png_render_cache, root,
+    }, modals, pages::{instance::instance_page::{InstancePage, InstanceSubpageType}, instances_page::InstancesPage, modrinth_page::ModrinthSearchPage, syncing_page::SyncingPage}, png_render_cache, root
 };
 
 pub struct LauncherUI {
@@ -246,7 +244,7 @@ impl Render for LauncherUI {
 
         let pandora_icon = Icon::empty().path("icons/pandora.svg");
 
-        let footer = div().w_full().id("footer-button").child(SidebarFooter::new()
+        let footer = div().flex_grow().id("footer-button").child(SidebarFooter::new()
             .w_full()
             .justify_center()
             .text_size(rems(0.9375))
@@ -313,18 +311,38 @@ impl Render for LauncherUI {
                 }
             });
 
+        let settings_button = div()
+            .id("settings-button")
+            .gap_2()
+            .p_2()
+            .rounded(cx.theme().radius)
+            .hover(|this| {
+                this.bg(cx.theme().sidebar_accent)
+                    .text_color(cx.theme().sidebar_accent_foreground)
+            })
+            .child(IconName::Settings)
+            .on_click({
+                let theme_folder = self.data.theme_folder.clone();
+                move |_, window, cx| {
+                    let build = modals::settings::build_settings_sheet(theme_folder.clone(), window, cx);
+                    window.open_sheet_at(gpui_component::Placement::Left, cx, build);
+                }
+            });
+
         let sidebar = Sidebar::left()
             .width(relative(1.))
             .border_width(px(0.))
             .header(
-                SidebarHeader::new()
+                h_flex()
+                    .p_2()
+                    .gap_2()
                     .w_full()
                     .justify_center()
                     .text_size(rems(0.9375))
                     .child(pandora_icon.size_8().min_w_8().min_h_8())
                     .child("Pandora"),
             )
-            .footer(footer)
+            .footer(h_flex().flex_wrap().justify_center().w_full().child(settings_button).child(footer))
             .children(groups);
 
         h_resizable("container")

@@ -27,7 +27,7 @@ use crate::{
     account::BackendAccountInfo, config::BackendConfig, directories::LauncherDirectories, id_slab::IdSlab, instance::{Instance, InstanceInfo}, launch::Launcher, metadata::{items::MinecraftVersionManifestMetadataItem, manager::MetadataManager}, mod_metadata::ModMetadataManager, persistent::Persistent
 };
 
-pub fn start(send: FrontendHandle, self_handle: BackendHandle, recv: BackendReceiver) {
+pub fn start(launcher_dir: PathBuf, send: FrontendHandle, self_handle: BackendHandle, recv: BackendReceiver) {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
@@ -48,9 +48,6 @@ pub fn start(send: FrontendHandle, self_handle: BackendHandle, recv: BackendRece
         .build()
         .unwrap();
 
-    let base_dirs = directories::BaseDirs::new().unwrap();
-    let data_dir = base_dirs.data_dir();
-    let launcher_dir = data_dir.join("PandoraLauncher");
     let directories = Arc::new(LauncherDirectories::new(launcher_dir));
 
     let meta = Arc::new(MetadataManager::new(

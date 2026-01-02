@@ -1,8 +1,7 @@
 #![deny(unused_must_use)]
 
 use std::{
-    collections::HashMap,
-    sync::{Arc, RwLock},
+    collections::HashMap, io::Write, path::{Path, PathBuf}, sync::{Arc, RwLock}
 };
 
 use bridge::{
@@ -11,18 +10,17 @@ use bridge::{
 };
 use gpui::*;
 use gpui_component::{
-    Root, ThemeMode, WindowExt,
-    notification::{Notification, NotificationType},
+    notification::{Notification, NotificationType}, Root, StyledExt, WindowExt
 };
 use indexmap::IndexMap;
+use rand::RngCore;
+use serde::Deserialize;
 use tokio::sync::mpsc::Receiver;
 
 use crate::{
     entity::{
         account::AccountEntries, instance::InstanceEntries, metadata::FrontendMetadata, DataEntities
-    },
-    game_output::{GameOutput, GameOutputRoot},
-    root::{LauncherRoot, LauncherRootGlobal},
+    }, game_output::{GameOutput, GameOutputRoot}, interface_config::InterfaceConfig, root::{LauncherRoot, LauncherRootGlobal}
 };
 
 pub mod component;
@@ -30,6 +28,7 @@ pub mod entity;
 pub mod game_output;
 pub mod modals;
 pub mod pages;
+pub mod interface_config;
 pub mod png_render_cache;
 pub mod root;
 pub mod ui;
@@ -72,6 +71,7 @@ pub const MAIN_FONT: &'static str = "Inter 24pt 24pt";
 pub const MAIN_FONT: &'static str = "Inter 24pt";
 
 pub fn start(
+    launcher_dir: PathBuf,
     panic_message: Arc<RwLock<Option<String>>>,
     deadlock_message: Arc<RwLock<Option<String>>>,
     backend_handle: BackendHandle,
@@ -84,18 +84,40 @@ pub fn start(
         .unwrap(),
     );
 
-    Application::new().with_http_client(http_client).with_assets(Assets).run(|cx: &mut App| {
+    Application::new().with_http_client(http_client).with_assets(Assets).run(move |cx: &mut App| {
         let _ = cx.text_system().add_fonts(vec![
             Assets.load("fonts/inter/Inter-Regular.ttf").unwrap().unwrap(),
             Assets.load("fonts/roboto-mono/RobotoMono-Regular.ttf").unwrap().unwrap(),
         ]);
 
         gpui_component::init(cx);
-        gpui_component::Theme::change(ThemeMode::Dark, None, cx);
+        InterfaceConfig::init(cx, launcher_dir.join("interface.json").into());
+
+        gpui_component::Theme::change(gpui_component::ThemeMode::Dark, None, cx);
+
+        let theme_folder = launcher_dir.join("themes");
+
+        _ = gpui_component::ThemeRegistry::watch_dir(theme_folder.clone(), cx, move |cx| {
+            let theme_name = InterfaceConfig::get(cx).active_theme.clone();
+            if theme_name.is_empty() {
+                return;
+            }
+
+            let Some(theme) = gpui_component::ThemeRegistry::global(cx).themes().get(&SharedString::new(theme_name.trim_ascii())).cloned() else {
+                return;
+            };
+
+            gpui_component::Theme::global_mut(cx).apply_config(&theme);
+        });
 
         let theme = gpui_component::Theme::global_mut(cx);
         theme.font_family = SharedString::new_static(MAIN_FONT);
         theme.scrollbar_show = gpui_component::scroll::ScrollbarShow::Always;
+
+        cx.on_app_quit(|cx| {
+            InterfaceConfig::force_save(cx);
+            async {}
+        }).detach();
 
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
@@ -125,6 +147,7 @@ pub fn start(
                     metadata,
                     backend_handle,
                     accounts,
+                    theme_folder: theme_folder.into(),
                 };
 
                 {
@@ -295,4 +318,9 @@ pub(crate) fn is_single_component_path(path: &str) -> bool {
     }
 
     components.count() == 1
+}
+
+#[inline]
+pub(crate) fn labelled(label: &'static str, element: impl IntoElement) -> Div {
+    gpui_component::v_flex().gap_0p5().child(div().text_sm().font_medium().child(label)).child(element)
 }
