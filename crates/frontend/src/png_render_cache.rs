@@ -118,7 +118,7 @@ impl PngRenderCache {
 
         let result = image::load_from_memory_with_format(&image, image::ImageFormat::Png).map(|mut image| {
             match transform {
-                ImageTransformation::None => todo!(),
+                ImageTransformation::None => {},
                 ImageTransformation::Resize { width, height } => {
                     let old_width = image.width();
                     let old_height = image.height();
