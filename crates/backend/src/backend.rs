@@ -553,7 +553,10 @@ impl BackendState {
                 return;
             };
 
-            let head = image.crop(8, 8, 8, 8);
+            let mut head = image.crop(8, 8, 8, 8);
+            let head_overlay = image.crop(40, 8, 8, 8);
+
+            image::imageops::overlay(&mut head, &head_overlay, 0, 0);
 
             let mut head_bytes = Vec::new();
             let mut cursor = Cursor::new(&mut head_bytes);
