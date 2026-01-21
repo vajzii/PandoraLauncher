@@ -1,5 +1,5 @@
 use std::{
-    borrow::Cow, cmp::Ordering, collections::{BTreeSet, HashMap, HashSet}, ffi::{OsStr, OsString}, io::{BufRead, BufReader, Read, Write}, path::{Path, PathBuf}, process::{Child, Stdio}, sync::{Arc, OnceLock, atomic::AtomicBool}
+    borrow::Cow, cmp::Ordering, collections::{BTreeSet, HashMap, HashSet}, ffi::{OsStr, OsString}, fs::File, io::{BufRead, BufReader, Read, Write}, path::{Path, PathBuf}, process::{Child, Stdio}, sync::{Arc, OnceLock, atomic::AtomicBool}
 };
 
 use bridge::{
@@ -7,11 +7,11 @@ use bridge::{
 };
 use futures::{FutureExt, TryFutureExt};
 use rand::seq::SliceRandom;
-use rc_zip_sync::ReadZip;
+use rc_zip_sync::{ArchiveHandle, ReadZip};
 use regex::Regex;
 use rustc_hash::FxHashMap;
 use schema::{
-    assets_index::AssetsIndex, fabric_launch::FabricLaunch, forge::{ForgeInstallProfile, ForgeSide, VersionFragment}, instance::InstanceConfiguration, java_runtime_component::{JavaRuntimeComponentFile, JavaRuntimeComponentManifest}, loader::Loader, maven::MavenMetadataXml, version::{
+    assets_index::AssetsIndex, fabric_launch::FabricLaunch, forge::{ForgeInstallProfile, ForgeInstallProfileLegacy, ForgeSide, VersionFragment}, instance::InstanceConfiguration, java_runtime_component::{JavaRuntimeComponentFile, JavaRuntimeComponentManifest}, loader::Loader, maven::{MavenCoordinate, MavenMetadataXml}, version::{
         GameLibrary, GameLibraryArtifact, GameLibraryDownloads, GameLibraryExtractOptions, GameLogging, LaunchArgument, LaunchArgumentValue, MinecraftVersion, OsArch, OsName, PartialMinecraftVersion, Rule, RuleAction
     }, version_manifest::MinecraftVersionManifest
 };
@@ -545,8 +545,38 @@ impl Launcher {
             return Err(LaunchError::MissingFileInZipError(Cow::Borrowed("install_profile.json")));
         };
 
-        let install_profile: ForgeInstallProfile = serde_json::from_slice(&install_profile_file.bytes()?)?;
+        let install_profile_bytes = install_profile_file.bytes()?;
 
+        let install_profile = serde_json::from_slice(&install_profile_bytes);
+
+        if install_profile.is_err() {
+            if let Ok(install_profile_legacy) = serde_json::from_slice(&install_profile_bytes) {
+                launch_tracker.add_count(1);
+                let ret = self.create_forgelike_install_version_legacy(install_profile_legacy, installer_zip,
+                    base_version, http_client, progress_trackers, launch_tracker, instance_info, check_mirrors).await;
+                return ret;
+            }
+        }
+
+        self.create_forgelike_install_version_modern(install_profile?, installer_zip,
+            installer_path, minecraft_jar_path, &java_load_result, base_version, http_client,
+            progress_trackers, launch_tracker, instance_info, check_mirrors).await
+    }
+
+    async fn create_forgelike_install_version_modern(
+        &self,
+        install_profile: ForgeInstallProfile,
+        installer_zip: ArchiveHandle<'_, File>,
+        installer_path: &PathBuf,
+        minecraft_jar_path: &PathBuf,
+        java_path: &PathBuf,
+        base_version: Arc<MinecraftVersion>,
+        http_client: &reqwest::Client,
+        progress_trackers: &ProgressTrackers,
+        launch_tracker: &ProgressTracker,
+        instance_info: &InstanceConfiguration,
+        check_mirrors: bool,
+    ) -> Result<(Arc<MinecraftVersion>, AddVanillaJar), LaunchError> {
         if &*install_profile.minecraft != instance_info.minecraft_version.as_str() {
             return Err(LaunchError::MismatchedLoaderVersions(install_profile.minecraft.clone()));
         }
@@ -571,6 +601,7 @@ impl Launcher {
         launch_tracker.add_count(1);
         launch_tracker.notify();
 
+        // Download libraries
         let libraries = install_profile.libraries.iter().filter_map(|library| {
             let mut artifact = library.downloads.artifact.clone()?;
             if let Some(mirror) = &mirror {
@@ -623,7 +654,6 @@ impl Launcher {
         }
 
         drop(installer_zip);
-        drop(installer_file);
 
         data.insert("SIDE".into(), "client".into());
         data.insert("MINECRAFT_JAR".into(), minecraft_jar_path.as_os_str().to_os_string());
@@ -696,7 +726,7 @@ impl Launcher {
                 continue;
             };
 
-            let mut command = std::process::Command::new(&*java_load_result);
+            let mut command = std::process::Command::new(java_path);
 
             command.current_dir(&forge_temp);
             command.stdin(Stdio::inherit());
@@ -747,6 +777,63 @@ impl Launcher {
         launch_tracker.notify();
 
         Ok((Arc::new(version.apply_to(&base_version)), AddVanillaJar::No))
+    }
+
+    async fn create_forgelike_install_version_legacy(
+        &self,
+        install_profile: ForgeInstallProfileLegacy,
+        installer_zip: ArchiveHandle<'_, File>,
+        base_version: Arc<MinecraftVersion>,
+        http_client: &reqwest::Client,
+        progress_trackers: &ProgressTrackers,
+        launch_tracker: &ProgressTracker,
+        instance_info: &InstanceConfiguration,
+        check_mirrors: bool,
+    ) -> Result<(Arc<MinecraftVersion>, AddVanillaJar), LaunchError> {
+        if &*install_profile.install.minecraft != instance_info.minecraft_version.as_str() {
+            return Err(LaunchError::MismatchedLoaderVersions(install_profile.install.minecraft.clone()));
+        }
+
+        // Extract forge jar
+        let Some(file) = installer_zip.by_name(&install_profile.install.file_path) else {
+            return Err(LaunchError::MissingFileInZipError(Cow::Owned(install_profile.install.file_path.to_string())));
+        };
+        let forge_path = MavenCoordinate::create(&install_profile.install.path).artifact_path();
+        if !path_is_normal(forge_path.as_str()) {
+            return Err(LoadLibrariesError::IllegalLibraryPath(forge_path.into()).into());
+        }
+        let forge_artifact_path = self.directories.libraries_dir.join(forge_path.as_str());
+        crate::write_safe(&forge_artifact_path, &file.bytes()?)?;
+
+        // Read partial minecraft version
+        let version: PartialMinecraftVersion = install_profile.version_info.into_partial_version(ForgeSide::Client);
+
+        // Download mirror list
+        let mirror = if check_mirrors {
+            Self::download_random_mirror(http_client, &install_profile.install.mirror_list).await
+        } else {
+            None
+        };
+
+        launch_tracker.add_count(1);
+        launch_tracker.notify();
+
+        // Download libraries with mirror
+        if let Some(libraries) = &version.libraries {
+            let libraries = libraries.iter().filter_map(|library| {
+                let mut artifact = library.downloads.artifact.clone()?;
+                if let Some(mirror) = &mirror {
+                    if artifact.url.starts_with("http") && !artifact.url.starts_with("https://libraries.minecraft.net/") && artifact.url.ends_with(artifact.path.as_str()) {
+                        artifact.url = format!("{}{}", mirror, artifact.path).into();
+                    }
+                }
+                Some(artifact)
+            }).collect::<Vec<_>>();
+
+            self.load_libraries(http_client, &libraries, progress_trackers, launch_tracker).await?;
+        }
+
+        Ok((Arc::new(version.apply_to(&base_version)), AddVanillaJar::Yes))
     }
 
     async fn download_sha1(http_client: &reqwest::Client, url: &str) -> Option<Ustr> {
@@ -1226,72 +1313,6 @@ impl Launcher {
             output = &output[2..];
         }
         output.parse().ok()
-    }
-}
-
-struct MavenCoordinate<'a> {
-    group_id: &'a str,
-    artifact_id: &'a str,
-    version: &'a str,
-    specifier: Option<&'a str>,
-    extension: Option<&'a str>,
-}
-
-impl<'a> MavenCoordinate<'a> {
-    fn create(maven: &'a str) -> Self {
-        let (main, extension) = if let Some((main, extension)) = maven.split_once('@') {
-            (main, Some(extension))
-        } else {
-            (maven, None)
-        };
-
-        let mut split = main.split(":");
-        let group_id = split.next().unwrap();
-        let artifact_id = split.next().unwrap();
-        let version = split.next().unwrap();
-        let specifier = split.next();
-
-        Self { group_id, artifact_id, version, specifier, extension }
-    }
-
-    fn version_id(&self) -> Vec<isize> {
-        let without_plus = self.version.split_once("+").map(|s| s.0).unwrap_or(self.version);
-
-        let mut version_numbers = Vec::new();
-        for part in without_plus.split(".") {
-            if let Ok(number) = part.parse() {
-                version_numbers.push(number);
-            } else {
-                version_numbers.push(0);
-            }
-        }
-        if version_numbers.is_empty() {
-            version_numbers.push(0);
-        }
-        version_numbers
-    }
-
-    fn artifact_path(&self) -> String {
-        let mut name = self.group_id.replace(".", "/");
-        name.push('/');
-        name.push_str(self.artifact_id);
-        name.push('/');
-        name.push_str(self.version);
-        name.push('/');
-        name.push_str(self.artifact_id);
-        name.push('-');
-        name.push_str(self.version);
-        if let Some(specifier) = self.specifier {
-            name.push('-');
-            name.push_str(specifier);
-        }
-        name.push('.');
-        if let Some(extension) = self.extension {
-            name.push_str(extension);
-        } else {
-            name.push_str("jar");
-        }
-        name
     }
 }
 
